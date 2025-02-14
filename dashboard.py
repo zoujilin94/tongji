@@ -8,7 +8,7 @@ import locale
 st.set_page_config(layout="wide")
 
 # 设置中文语言环境，使日期选择器显示中文
-locale.setlocale(locale.LC_ALL, 'zh_CN.UTF-8')
+locale.setlocale(locale.LC_ALL, 'zh_Hans_CN.UTF-8')
 
 # 自定义 CSS 来调整容器宽度
 def add_custom_css():
