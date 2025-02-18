@@ -1,3 +1,4 @@
+from io import BytesIO
 import pandas as pd
 import streamlit as st
 from datetime import datetime
@@ -67,24 +68,21 @@ def find_all_subordinates(df, user_phone, all_subs=None, depth=0, max_depth=100)
 
 # 计算统计指标
 def calculate_metrics(df, level):
-    if level == "direct":
+    try:
         sub_count = len(df)
-        black_card_count = df[df["等级"] == "黑金卡"].shape[0]
-        order_count = df["直推订单数"].sum() if "直推订单数" in df.columns else 0
-        order_amount = df["直推订单金额"].sum() if "直推订单金额" in df.columns else 0
-    else:
-        sub_count = len(df)
-        black_card_count = df[df["等级"] == "黑金卡"].shape[0]
-        order_count = df["团队订单数"].sum() if "团队订单数" in df.columns else 0
-        order_amount = df["团队订单金额"].sum() if "团队订单金额" in df.columns else 0
-    return sub_count, black_card_count, order_count, order_amount
+        black_card_count = df[df["等级"] == "黑金卡"].shape[0] if not df.empty else 0
+        order_count = df["直推订单数"].sum() if (level == "direct" and not df.empty) else df["团队订单数"].sum()
+        order_amount = df["直推订单金额"].sum() if (level == "direct" and not df.empty) else df["团队订单金额"].sum()
+        return sub_count, black_card_count, order_count, order_amount
+    except Exception as e:
+        st.error(f"计算指标时发生错误: {str(e)}")
+        return 0, 0, 0, 0
 
 # 构建仪表盘
 def main():
-    add_custom_css()  # 添加自定义 CSS
+    add_custom_css()
     st.title("用户关系分析仪表盘")
 
-    # 文件选择器，修改提示文字为中文
     file = st.file_uploader("请选择 Excel 文件", type=["xlsx"])
 
     if file is not None:
@@ -92,85 +90,114 @@ def main():
         if df is None:
             return
 
+        # 获取所有用户姓名列表（去重）
+        all_users = df["姓名"].unique().tolist()
+
+        # 创建多选组件
+        selected_names = st.multiselect(
+            "选择或搜索多个用户（支持拼音首字母搜索）",
+            options=all_users,
+            format_func=lambda x: x,
+            key="user_selector"
+        )
+
         # 侧边栏日期筛选
         st.sidebar.header("筛选条件")
-        # 确保领卡时间列不为空
-        if not df["领卡时间"].empty:
-            start_date = st.sidebar.date_input("开始日期", df["领卡时间"].min().date())
-            end_date = st.sidebar.date_input("结束日期", df["领卡时间"].max().date())
-        else:
-            st.warning("领卡时间列无有效数据，请检查文件。")
-            return
+        start_date = st.sidebar.date_input("开始日期", df["领卡时间"].min().date())
+        end_date = st.sidebar.date_input("结束日期", df["领卡时间"].max().date())
 
-        # 主界面搜索用户
-        search_name = st.text_input("输入用户姓名搜索")
+        # 按日期筛选数据
+        filtered_df = df[(df["领卡时间"] >= pd.Timestamp(start_date)) &
+                        (df["领卡时间"] <= pd.Timestamp(end_date))]
 
-        if search_name:
-            target_user = df[df["姓名"] == search_name]
+        # 存储所有用户数据的列表
+        all_users_data = []
+
+        # 进度条
+        progress_bar = st.progress(0)
+        total_users = len(selected_names)
+
+        for index, name in enumerate(selected_names):
+            progress = (index + 1) / total_users
+            progress_bar.progress(progress)
+
+            target_user = filtered_df[filtered_df["姓名"] == name]
             if target_user.empty:
-                st.warning(f"未找到姓名为 '{search_name}' 的用户，请检查姓名拼写是否正确。")
-                return
+                st.warning(f"跳过无效用户：{name}")
+                continue
 
             user_phone = target_user["手机号"].values[0]
 
-            # 按日期筛选数据
-            filtered_df = df[(df["领卡时间"] >= pd.Timestamp(start_date)) &
-                             (df["领卡时间"] <= pd.Timestamp(end_date))]
-            st.write(f"筛选前数据量: {len(df)}, 筛选后数据量: {len(filtered_df)}")
-
             # 查找直推下级
             direct_subs = filtered_df[filtered_df["推荐人手机号"] == user_phone]
-
+            
             # 查找所有下级
             all_subs_phones = find_all_subordinates(filtered_df, user_phone)
             all_subs = filtered_df[filtered_df["手机号"].isin(all_subs_phones)]
 
-            # 显示统计指标
-            col1, col2 = st.columns(2)
-            with col1:
-                direct_sub_count, direct_black_card_count, direct_order_count, direct_order_amount = calculate_metrics(direct_subs, "direct")
-                st.write(f"直推下级人数计算结果: {direct_sub_count}")
-                st.metric("直推下级人数", direct_sub_count)
-                st.write(f"直推黑金卡数计算结果: {direct_black_card_count}")
-                st.metric("直推黑金卡数", direct_black_card_count)
-                st.write(f"直推订单总数计算结果: {direct_order_count}")
-                st.metric("直推订单总数", direct_order_count)
-                st.write(f"直推订单金额计算结果: {direct_order_amount}")
-                st.metric("直推订单金额", f"¥{direct_order_amount:,.2f}")
+            # 计算指标
+            direct_metrics = calculate_metrics(direct_subs, "direct")
+            all_metrics = calculate_metrics(all_subs, "all")
 
-            with col2:
-                all_sub_count, all_black_card_count, team_order_count, team_order_amount = calculate_metrics(all_subs, "all")
-                st.write(f"所有下级人数计算结果: {all_sub_count}")
-                st.metric("所有下级人数", all_sub_count)
-                st.write(f"所有黑金卡数计算结果: {all_black_card_count}")
-                st.metric("所有黑金卡数", all_black_card_count)
-                st.write(f"团队订单总数计算结果: {team_order_count}")
-                st.metric("团队订单总数", team_order_count)
-                st.write(f"团队订单金额计算结果: {team_order_amount}")
-                st.metric("团队订单金额", f"¥{team_order_amount:,.2f}")
+            # 构建用户数据字典
+            user_data = {
+                "姓名": name,
+                "手机号": user_phone,
+                "直推下级人数": direct_metrics[0],
+                "直推黑金卡数": direct_metrics[1],
+                "直推订单总数": direct_metrics[2],
+                "直推订单金额": direct_metrics[3],
+                "所有下级人数": all_metrics[0],
+                "所有黑金卡数": all_metrics[1],
+                "团队订单总数": all_metrics[2],
+                "团队订单金额": all_metrics[3],
+                "直推下级名单": direct_subs["手机号"].tolist(),
+                "所有下级名单": all_subs["手机号"].tolist()
+            }
+            all_users_data.append(user_data)
 
-            # 显示下级名单，调整布局
-            # 第一行显示直推下级名单和直推下级推广情况
-            row1_col1, row1_col2 = st.columns(2)
-            with row1_col1:
-                st.subheader("直推下级名单")
-                st.dataframe(direct_subs[["姓名", "手机号", "等级", "自购订单数", "自购订单金额", "自购订单实体卡"]])
+        # 生成汇总表格
+        summary_df = pd.DataFrame([{
+            "姓名": data["姓名"],
+            "直推下级人数": data["直推下级人数"],
+            "直推黑金卡数": data["直推黑金卡数"],
+            "直推订单总数": data["直推订单总数"],
+            "直推订单金额": data["直推订单金额"],
+            "所有下级人数": data["所有下级人数"],
+            "所有黑金卡数": data["所有黑金卡数"],
+            "团队订单总数": data["团队订单总数"],
+            "团队订单金额": data["团队订单金额"]
+        } for data in all_users_data])
 
-            with row1_col2:
-                st.subheader("直推下级推广情况")
-                st.dataframe(direct_subs[["姓名", "手机号", "等级", "直推订单数", "直推订单金额", "直推订单实体卡"]])
+        # 显示汇总表格
+        st.subheader("多用户汇总统计")
+        st.dataframe(summary_df)
 
-            # 第二行显示所有下级名单
-            st.subheader("所有下级名单")
-            st.dataframe(all_subs[["姓名", "手机号", "等级", "团队订单数", "团队订单金额", "团队订单实体卡"]])
+        # 导出功能
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+            summary_df.to_excel(writer, sheet_name='汇总统计', index=False)
+            
+            # 添加详细数据
+            for data in all_users_data:
+                user_sheet_name = f"{data['姓名']}-详情"
+                
+                # 直推下级名单
+                direct_df = filtered_df[filtered_df["手机号"].isin(data["直推下级名单"])]
+                direct_df.to_excel(writer, sheet_name=f"{user_sheet_name}-直推", index=False)
+                
+                # 所有下级名单
+                all_df = filtered_df[filtered_df["手机号"].isin(data["所有下级名单"])]
+                all_df.to_excel(writer, sheet_name=f"{user_sheet_name}-所有下级", index=False)
 
-            # 绘制订单金额分布图，设置为竖版
-            st.subheader("订单金额分布")
-            if "团队订单金额" in all_subs.columns and not all_subs["团队订单金额"].empty:
-                fig = px.bar(all_subs, y="姓名", x="团队订单金额", orientation='h')  # 设置为竖版
-                st.plotly_chart(fig)
-            else:
-                st.warning("团队订单金额列无有效数据，无法绘制订单金额分布图。")
+        output.seek(0)
+        st.download_button(
+            label="下载报表",
+            data=output,
+            file_name=f"用户统计报表_{datetime.now().strftime('%Y%m%d%H%M')}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
 
 if __name__ == "__main__":
     main()
